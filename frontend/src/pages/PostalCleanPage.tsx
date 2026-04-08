@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Upload, Button, Table, Space, Tag, Progress, message, Modal } from 'antd';
-import { DeleteOutlined, ExportOutlined, SyncOutlined, EyeOutlined } from '@ant-design/icons';
+import { DeleteOutlined, ExportOutlined, SyncOutlined, EyeOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { postalApi, RouteImport } from '../services/api';
 import type { UploadProps } from 'antd';
 
@@ -199,6 +199,14 @@ const PostalCleanPage: React.FC = () => {
       key: 'action',
       render: (_: any, record: RouteImport) => (
         <Space>
+          <Button
+            type="link"
+            icon={<PlayCircleOutlined />}
+            onClick={() => handleClean(record.id)}
+            disabled={record.status !== 'pending'}
+          >
+            清洗
+          </Button>
           <Button
             type="link"
             icon={<EyeOutlined />}

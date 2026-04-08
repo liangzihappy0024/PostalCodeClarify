@@ -533,7 +533,7 @@ export class PostalService {
       worksheet = XLSX.utils.aoa_to_sheet([['无数据']]);
     } else {
       // 排除不需要的列
-      const excludeColumns = ['省(oTMS)', '市(oTMS)', '区(oTMS)', '市(town)', '县(County)'];
+      const excludeColumns = ['省 (oTMS)', '市 (oTMS)', '区 (oTMS)', '市 (town)', '县 (County)'];
       const headers = Object.keys(resultData[0]).filter(header => !excludeColumns.includes(header));
       const data = [headers, ...resultData.map(row => headers.map(header => row[header] || ''))];
       worksheet = XLSX.utils.aoa_to_sheet(data);
