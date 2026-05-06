@@ -158,9 +158,9 @@ export class PostalController {
       const importRecord = await prisma.userRouteImport.findUnique({ where: { id } });
       const originalFileName = importRecord?.fileName || '清洗结果';
       
-      // 移除文件扩展名，添加"_清洗结果"后缀
+      // 移除文件扩展名，添加"_result"后缀
       const fileNameWithoutExt = originalFileName.replace(/\.[^/.]+$/, "");
-      const fileName = encodeURIComponent(`${fileNameWithoutExt}_清洗结果.xlsx`);
+      const fileName = encodeURIComponent(`${fileNameWithoutExt}_result.xlsx`);
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=${fileName}; filename*=UTF-8''${fileName}`);

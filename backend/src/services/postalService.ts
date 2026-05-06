@@ -120,13 +120,38 @@ export class PostalService {
       const workbook = XLSX.read(file.buffer, { type: 'buffer', cellDates: true });
       let jsonData: Record<string, any>[] = [];
       
+      // 检测是否为单列"城市"数据格式
+      let isSingleCityColumn = false;
+      let cityColumnName = '';
+      
       // 处理所有工作表
       workbook.SheetNames.forEach(sheetName => {
         const worksheet = workbook.Sheets[sheetName];
         const sheetData = XLSX.utils.sheet_to_json(worksheet, { raw: false }) as Record<string, any>[];
-        // 为每条数据添加工作表名称
+        
+        // 检测单列城市格式：只有一列且列名为"城市"或"city"（忽略首尾空格）
+        if (sheetData.length > 0) {
+          const firstRowKeys = Object.keys(sheetData[0]);
+          // 检查原始Excel是否只有一列且列名为"城市"或"city"
+          if (firstRowKeys.length === 1) {
+            const key = firstRowKeys[0].trim();
+            if (key === '城市' || key === 'city') {
+              isSingleCityColumn = true;
+              cityColumnName = firstRowKeys[0];
+            }
+          }
+        }
+        
+        // 为每条数据添加工作表名称和标记
         sheetData.forEach(row => {
           row['工作表'] = sheetName;
+          if (isSingleCityColumn) {
+            row['_isSingleCityColumn'] = true;
+            // 确保"城市"字段存在
+            if (cityColumnName && row[cityColumnName]) {
+              row['城市'] = row[cityColumnName];
+            }
+          }
         });
         jsonData = jsonData.concat(sheetData);
       });
@@ -278,9 +303,108 @@ export class PostalService {
 
         let matched = false;
 
+        // 处理单列"城市"格式的数据
+        // 匹配逻辑：从第三级开始，如果未匹配到则匹配第二级，仍未匹配到时匹配第一级
+        // 如果不能精确匹配，则从对应级别描述的开始进行匹配
+        if (record['_isSingleCityColumn'] && record['城市']) {
+          const cityValue = String(record['城市']).trim();
+          let singleMatch;
+          let matchLevel: 'district' | 'city' | 'province' | null = null;
+          
+          // 1. 首先尝试精确匹配三级区域（district）
+          singleMatch = await prisma.standardPostalCode.findFirst({
+            where: { district: cityValue }
+          });
+          if (singleMatch) {
+            matchLevel = 'district';
+          }
+          
+          // 2. 如果三级区域精确匹配失败，尝试开头匹配三级区域
+          if (!singleMatch) {
+            singleMatch = await prisma.standardPostalCode.findFirst({
+              where: { district: { startsWith: cityValue } }
+            });
+            if (singleMatch) {
+              matchLevel = 'district';
+            }
+          }
+          
+          // 3. 如果三级区域匹配失败，尝试精确匹配二级区域（city）
+          if (!singleMatch) {
+            singleMatch = await prisma.standardPostalCode.findFirst({
+              where: { city: cityValue }
+            });
+            if (singleMatch) {
+              matchLevel = 'city';
+            }
+          }
+          
+          // 4. 如果二级区域精确匹配失败，尝试开头匹配二级区域
+          if (!singleMatch) {
+            singleMatch = await prisma.standardPostalCode.findFirst({
+              where: { city: { startsWith: cityValue } }
+            });
+            if (singleMatch) {
+              matchLevel = 'city';
+            }
+          }
+          
+          // 5. 如果二级区域匹配失败，尝试精确匹配一级区域（province）
+          if (!singleMatch) {
+            singleMatch = await prisma.standardPostalCode.findFirst({
+              where: { province: cityValue }
+            });
+            if (singleMatch) {
+              matchLevel = 'province';
+            }
+          }
+          
+          // 6. 如果一级区域精确匹配失败，尝试开头匹配一级区域
+          if (!singleMatch) {
+            singleMatch = await prisma.standardPostalCode.findFirst({
+              where: { province: { startsWith: cityValue } }
+            });
+            if (singleMatch) {
+              matchLevel = 'province';
+            }
+          }
+          
+          if (singleMatch && matchLevel) {
+            if (matchLevel === 'district') {
+              cleanedRecord['一级区域（oTMS）'] = singleMatch.province;
+              cleanedRecord['二级区域（oTMS）'] = singleMatch.city;
+              cleanedRecord['三级区域（oTMS）'] = singleMatch.district;
+              cleanedRecord['省 (oTMS)'] = singleMatch.province;
+              cleanedRecord['市 (oTMS)'] = singleMatch.city;
+              cleanedRecord['区 (oTMS)'] = singleMatch.district;
+              cleanedRecord['市 (town)'] = singleMatch.city;
+              cleanedRecord['县 (County)'] = singleMatch.district;
+            } else if (matchLevel === 'city') {
+              cleanedRecord['一级区域（oTMS）'] = singleMatch.province;
+              cleanedRecord['二级区域（oTMS）'] = singleMatch.city;
+              cleanedRecord['三级区域（oTMS）'] = '';
+              cleanedRecord['省 (oTMS)'] = singleMatch.province;
+              cleanedRecord['市 (oTMS)'] = singleMatch.city;
+              cleanedRecord['区 (oTMS)'] = '';
+              cleanedRecord['市 (town)'] = singleMatch.city;
+              cleanedRecord['县 (County)'] = '';
+            } else if (matchLevel === 'province') {
+              cleanedRecord['一级区域（oTMS）'] = singleMatch.province;
+              cleanedRecord['二级区域（oTMS）'] = '';
+              cleanedRecord['三级区域（oTMS）'] = '';
+              cleanedRecord['省 (oTMS)'] = singleMatch.province;
+              cleanedRecord['市 (oTMS)'] = '';
+              cleanedRecord['区 (oTMS)'] = '';
+              cleanedRecord['市 (town)'] = '';
+              cleanedRecord['县 (County)'] = '';
+            }
+            matched = true;
+          }
+        }
+
         // 处理只有一列信息且没有固定符号进行解析的情况
         // 首先尝试依次与三级区域、二级区域、一级区域进行精确匹配，以节约高德 API 调用
-        if (!province && !city && !district && originalRoute) {
+        if (!matched && !province && !city && !district && originalRoute) {
           let singleMatch;
           let matchLevel: 'district' | 'city' | 'province' | null = null;
           
@@ -533,7 +657,7 @@ export class PostalService {
       worksheet = XLSX.utils.aoa_to_sheet([['无数据']]);
     } else {
       // 排除不需要的列
-      const excludeColumns = ['省 (oTMS)', '市 (oTMS)', '区 (oTMS)', '市 (town)', '县 (County)'];
+      const excludeColumns = ['省 (oTMS)', '市 (oTMS)', '区 (oTMS)', '市 (town)', '县 (County)', '_isSingleCityColumn'];
       const headers = Object.keys(resultData[0]).filter(header => !excludeColumns.includes(header));
       const data = [headers, ...resultData.map(row => headers.map(header => row[header] || ''))];
       worksheet = XLSX.utils.aoa_to_sheet(data);
