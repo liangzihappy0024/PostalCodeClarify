@@ -14,5 +14,6 @@ router.get('/routes/:id', (req, res) => postalController.getUserRouteImportById(
 router.delete('/routes/:id', (req, res) => postalController.deleteUserRouteImport(req, res));
 router.post('/routes/:id/clean', (req, res) => postalController.cleanRouteData(req, res));
 router.get('/routes/:id/export', (req, res) => postalController.exportResult(req, res));
+router.get('/routes/:id/export-filename', (req, res) => postalController.getExportFileName(req, res));
 
 export default router;

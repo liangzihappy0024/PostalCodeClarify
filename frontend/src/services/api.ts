@@ -71,13 +71,18 @@ export const postalApi = {
     return apiClient.delete(`/postal/routes/${id}`);
   },
 
-  cleanRouteData: (id: number) => {
-    return apiClient.post(`/postal/routes/${id}/clean`);
+  cleanRouteData: (id: number, level: number = 3) => {
+    return apiClient.post(`/postal/routes/${id}/clean`, { level });
   },
 
-  exportResult: (id: number) => {
-    return apiClient.get(`/postal/routes/${id}/export`, {
+  exportResult: async (id: number) => {
+    const fileNameResponse = await apiClient.get<{ success: boolean; fileName: string }>(`/postal/routes/${id}/export-filename`);
+    const fileName = fileNameResponse.data.fileName;
+    
+    const response = await apiClient.get(`/postal/routes/${id}/export`, {
       responseType: 'blob'
     });
+    
+    return { data: { fileName, blob: response.data } };
   }
 };

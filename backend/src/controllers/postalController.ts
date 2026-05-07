@@ -136,7 +136,8 @@ export class PostalController {
   async cleanRouteData(req: Request, res: Response) {
     try {
       const id = parseInt(req.params.id);
-      const result = await postalService.cleanRouteData(id);
+      const level = parseInt(req.body.level as string) || 3;
+      const result = await postalService.cleanRouteData(id, level);
       
       if (result.success) {
         res.json({ success: true });
@@ -154,17 +155,34 @@ export class PostalController {
       
       const buffer = await postalService.generateExportExcelBuffer(id);
       
-      // 获取原始文件名
       const importRecord = await prisma.userRouteImport.findUnique({ where: { id } });
       const originalFileName = importRecord?.fileName || '清洗结果';
       
-      // 移除文件扩展名，添加"_result"后缀
       const fileNameWithoutExt = originalFileName.replace(/\.[^/.]+$/, "");
       const fileName = encodeURIComponent(`${fileNameWithoutExt}_result.xlsx`);
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=${fileName}; filename*=UTF-8''${fileName}`);
       res.send(buffer);
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async getExportFileName(req: Request, res: Response) {
+    try {
+      const id = parseInt(req.params.id);
+      
+      const importRecord = await prisma.userRouteImport.findUnique({ where: { id } });
+      if (!importRecord) {
+        return res.status(404).json({ success: false, error: '记录不存在' });
+      }
+      
+      const originalFileName = importRecord.fileName || '清洗结果';
+      const fileNameWithoutExt = originalFileName.replace(/\.[^/.]+$/, "");
+      const fileName = `${fileNameWithoutExt}_result.xlsx`;
+      
+      res.json({ success: true, fileName });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message });
     }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Upload, Button, Table, Space, Tag, Progress, message, Modal } from 'antd';
+import { Card, Upload, Button, Table, Space, Tag, Progress, message, Modal, Radio } from 'antd';
 import { DeleteOutlined, ExportOutlined, SyncOutlined, EyeOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { postalApi, RouteImport } from '../services/api';
 import type { UploadProps } from 'antd';
@@ -13,6 +13,9 @@ const PostalCleanPage: React.FC = () => {
   const [cleaningProgress, setCleaningProgress] = useState(0);
   const [messageApi, contextHolder] = message.useMessage();
   const [modal, modalContextHolder] = Modal.useModal();
+  const [cleanLevel, setCleanLevel] = useState<string>('3');
+  const [showCleanModal, setShowCleanModal] = useState(false);
+  const [currentCleanId, setCurrentCleanId] = useState<number | null>(null);
 
   useEffect(() => {
     loadImports();
@@ -51,7 +54,24 @@ const PostalCleanPage: React.FC = () => {
     }
   };
 
-  const handleClean = async (id: number) => {
+  const handleClean = (id: number) => {
+    setCleanLevel('3');
+    setCurrentCleanId(id);
+    setShowCleanModal(true);
+  };
+
+  const handleCleanModalOk = async () => {
+    if (currentCleanId !== null) {
+      await startClean(currentCleanId, parseInt(cleanLevel));
+    }
+    setShowCleanModal(false);
+  };
+
+  const handleCleanModalCancel = () => {
+    setShowCleanModal(false);
+  };
+
+  const startClean = async (id: number, level: number) => {
     setCleaningId(id);
     setCleaningProgress(0);
 
@@ -65,7 +85,7 @@ const PostalCleanPage: React.FC = () => {
     }, 500);
 
     try {
-      const response = await postalApi.cleanRouteData(id);
+      const response = await postalApi.cleanRouteData(id, level);
       if (response.data.success) {
         messageApi.success('清洗完成');
         loadImports();
@@ -86,13 +106,14 @@ const PostalCleanPage: React.FC = () => {
 
   const handleExport = async (id: number) => {
     try {
-      const response = await postalApi.exportResult(id);
+      const result = await postalApi.exportResult(id);
       
-      const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const blob = new Blob([result.data.blob], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'cleaned_routes.xlsx';
+      link.download = result.data.fileName;
+      
       link.click();
       window.URL.revokeObjectURL(url);
       
@@ -124,12 +145,25 @@ const PostalCleanPage: React.FC = () => {
       if (response.data.success) {
         const importRecord = response.data.data;
         if (importRecord) {
-          const importData = JSON.parse(importRecord.importData);
+          // 使用清洗后的结果数据（包含_multipleMatch字段）
+          const resultData = importRecord.resultData ? JSON.parse(importRecord.resultData) : JSON.parse(importRecord.importData);
+          
+          // 过滤掉内部字段和不需要的列
+          const columnsToExclude = ['_isSingleCityColumn', '_multipleMatch', '省 (oTMS)', '市 (oTMS)', '区 (oTMS)', '市 (town)', '县 (County)'];
+          const filteredData = resultData.map((record: Record<string, any>) => {
+            const filtered: Record<string, any> = {};
+            Object.keys(record).forEach(key => {
+              if (!columnsToExclude.includes(key)) {
+                filtered[key] = record[key];
+              }
+            });
+            return filtered;
+          });
           
           // 动态生成列定义
           let columns = [];
-          if (importData.length > 0) {
-            const firstRow = importData[0];
+          if (filteredData.length > 0) {
+            const firstRow = filteredData[0];
             columns = Object.keys(firstRow).map(key => ({
               title: key,
               dataIndex: key,
@@ -137,15 +171,25 @@ const PostalCleanPage: React.FC = () => {
             }));
           }
           
+          // 行样式函数：多匹配记录显示黄色背景
+          const rowClassName = (record: Record<string, any>, index: number) => {
+            const originalRecord = resultData[index];
+            const hasMultipleMatch = originalRecord && (originalRecord['_multipleMatch'] === true || originalRecord['_multipleMatch'] === 'true');
+            if (hasMultipleMatch) {
+              return 'multiple-match-row';
+            }
+            return '';
+          };
+          
           // 显示查看模态框
           modal.info({
             title: `查看导入记录：${importRecord.fileName}`,
             content: (
               <div style={{ maxHeight: 400, overflowY: 'auto' }}>
                 <Table 
-                  dataSource={importData} 
+                  dataSource={filteredData.map((item, idx) => ({ ...item, key: idx }))} 
                   columns={columns}
-                  rowKey={(record, index) => index}
+                  rowClassName={rowClassName}
                   pagination={{ pageSize: 10 }}
                 />
               </div>
@@ -242,6 +286,24 @@ const PostalCleanPage: React.FC = () => {
     <div>
       {contextHolder}
       {modalContextHolder}
+      <Modal
+        title="选择清洗级别"
+        open={showCleanModal}
+        onOk={handleCleanModalOk}
+        onCancel={handleCleanModalCancel}
+        okText="开始清洗"
+        cancelText="取消"
+        width={400}
+      >
+        <p>请选择开始清洗的级别，从对应级别开始向上匹配，不再考虑匹配低级别：</p>
+        <Radio.Group value={cleanLevel} onChange={(e) => setCleanLevel(e.target.value)}>
+          <Radio value="1">第一级（省/直辖市）</Radio>
+          <br />
+          <Radio value="2">第二级（市）</Radio>
+          <br />
+          <Radio value="3">第三级（区县）</Radio>
+        </Radio.Group>
+      </Modal>
       <Card title="线路导入清洗">
         <Dragger
           name="file"

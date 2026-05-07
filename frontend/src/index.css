@@ -11,3 +11,11 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
+
+.ant-table-row.multiple-match-row {
+  background-color: #fffbe6 !important;
+}
+
+.ant-table-row.multiple-match-row:hover {
+  background-color: #fff3c4 !important;
+}

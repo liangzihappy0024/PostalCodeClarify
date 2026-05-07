@@ -1,4 +1,5 @@
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
+import * as fs from 'fs';
 import { PrismaClient } from '@prisma/client';
 import { AmapService, GeocodeResult } from './amapService';
 
@@ -276,7 +277,7 @@ export class PostalService {
     }
   }
 
-  async cleanRouteData(id: number): Promise<{ success: boolean; error?: string }> {
+  async cleanRouteData(id: number, startLevel: number = 3): Promise<{ success: boolean; error?: string }> {
     try {
       await prisma.userRouteImport.update({
         where: { id },
@@ -304,68 +305,95 @@ export class PostalService {
         let matched = false;
 
         // 处理单列"城市"格式的数据
-        // 匹配逻辑：从第三级开始，如果未匹配到则匹配第二级，仍未匹配到时匹配第一级
-        // 如果不能精确匹配，则从对应级别描述的开始进行匹配
+        // 匹配逻辑：从用户选择的级别开始向上匹配，不再考虑匹配低级别
+        // 多匹配判断规则：
+        // - 匹配到第三级：在第三级中判断是否有多条记录
+        // - 匹配到第二级：仅在第三级为空的记录中判断是否有多个匹配
+        // - 匹配到第一级：仅在第二级和第三级都为空的记录中判断是否有多个匹配
         if (record['_isSingleCityColumn'] && record['城市']) {
           const cityValue = String(record['城市']).trim();
           let singleMatch;
           let matchLevel: 'district' | 'city' | 'province' | null = null;
           
-          // 1. 首先尝试精确匹配三级区域（district）
-          singleMatch = await prisma.standardPostalCode.findFirst({
-            where: { district: cityValue }
-          });
-          if (singleMatch) {
-            matchLevel = 'district';
-          }
+          // 根据startLevel决定从哪个级别开始匹配
+          // startLevel: 1-第一级(省), 2-第二级(市), 3-第三级(区县)
+          // 选择某个级别后，从该级别开始向上匹配，不再考虑匹配低级别
           
-          // 2. 如果三级区域精确匹配失败，尝试开头匹配三级区域
-          if (!singleMatch) {
+          // 当startLevel >= 3时，从第三级开始匹配
+          if (!singleMatch && startLevel >= 3) {
+            // 1. 首先尝试精确匹配三级区域（district）
             singleMatch = await prisma.standardPostalCode.findFirst({
-              where: { district: { startsWith: cityValue } }
+              where: { district: cityValue }
             });
             if (singleMatch) {
               matchLevel = 'district';
             }
+            
+            // 2. 如果三级区域精确匹配失败，尝试开头匹配三级区域
+            if (!singleMatch) {
+              const districtMatches = await prisma.standardPostalCode.findMany({
+                where: { district: { startsWith: cityValue } }
+              });
+              if (districtMatches.length === 1) {
+                singleMatch = districtMatches[0];
+                matchLevel = 'district';
+              } else if (districtMatches.length > 1) {
+                singleMatch = districtMatches[0];
+                matchLevel = 'district';
+                cleanedRecord['_multipleMatch'] = true;
+              }
+            }
           }
           
-          // 3. 如果三级区域匹配失败，尝试精确匹配二级区域（city）
-          if (!singleMatch) {
+          // 当startLevel >= 2时，从第二级开始匹配（包括从第三级降级到第二级的情况）
+          if (!singleMatch && startLevel >= 2) {
+            // 3. 尝试精确匹配二级区域（city），仅匹配第三级为空的记录
             singleMatch = await prisma.standardPostalCode.findFirst({
-              where: { city: cityValue }
+              where: { city: cityValue, district: '' }
             });
             if (singleMatch) {
               matchLevel = 'city';
             }
-          }
-          
-          // 4. 如果二级区域精确匹配失败，尝试开头匹配二级区域
-          if (!singleMatch) {
-            singleMatch = await prisma.standardPostalCode.findFirst({
-              where: { city: { startsWith: cityValue } }
-            });
-            if (singleMatch) {
-              matchLevel = 'city';
+            
+            // 4. 如果二级区域精确匹配失败，尝试开头匹配二级区域，仅匹配第三级为空的记录
+            if (!singleMatch) {
+              const cityMatches = await prisma.standardPostalCode.findMany({
+                where: { city: { startsWith: cityValue }, district: '' }
+              });
+              if (cityMatches.length === 1) {
+                singleMatch = cityMatches[0];
+                matchLevel = 'city';
+              } else if (cityMatches.length > 1) {
+                singleMatch = cityMatches[0];
+                matchLevel = 'city';
+                cleanedRecord['_multipleMatch'] = true;
+              }
             }
           }
           
-          // 5. 如果二级区域匹配失败，尝试精确匹配一级区域（province）
-          if (!singleMatch) {
+          // 当startLevel >= 1时，从第一级开始匹配（包括从第二级降级到第一级的情况）
+          if (!singleMatch && startLevel >= 1) {
+            // 5. 尝试精确匹配一级区域（province），仅匹配第二级和第三级都为空的记录
             singleMatch = await prisma.standardPostalCode.findFirst({
-              where: { province: cityValue }
+              where: { province: cityValue, city: '', district: '' }
             });
             if (singleMatch) {
               matchLevel = 'province';
             }
-          }
-          
-          // 6. 如果一级区域精确匹配失败，尝试开头匹配一级区域
-          if (!singleMatch) {
-            singleMatch = await prisma.standardPostalCode.findFirst({
-              where: { province: { startsWith: cityValue } }
-            });
-            if (singleMatch) {
-              matchLevel = 'province';
+            
+            // 6. 如果一级区域精确匹配失败，尝试开头匹配一级区域，仅匹配第二级和第三级都为空的记录
+            if (!singleMatch) {
+              const provinceMatches = await prisma.standardPostalCode.findMany({
+                where: { province: { startsWith: cityValue }, city: '', district: '' }
+              });
+              if (provinceMatches.length === 1) {
+                singleMatch = provinceMatches[0];
+                matchLevel = 'province';
+              } else if (provinceMatches.length > 1) {
+                singleMatch = provinceMatches[0];
+                matchLevel = 'province';
+                cleanedRecord['_multipleMatch'] = true;
+              }
             }
           }
           
@@ -404,41 +432,101 @@ export class PostalService {
 
         // 处理只有一列信息且没有固定符号进行解析的情况
         // 首先尝试依次与三级区域、二级区域、一级区域进行精确匹配，以节约高德 API 调用
+        // 多匹配判断规则：
+        // - 匹配到第三级：在第三级中判断是否有多条记录
+        // - 匹配到第二级：仅在第三级为空的记录中判断是否有多个匹配
+        // - 匹配到第一级：仅在第二级和第三级都为空的记录中判断是否有多个匹配
         if (!matched && !province && !city && !district && originalRoute) {
           let singleMatch;
           let matchLevel: 'district' | 'city' | 'province' | null = null;
           
-          // 1. 首先尝试精确匹配三级区域（district）
-          singleMatch = await prisma.standardPostalCode.findFirst({
-            where: {
-              district: originalRoute
-            }
-          });
-          if (singleMatch) {
-            matchLevel = 'district';
-          }
+          // 根据startLevel决定从哪个级别开始匹配
+          // 选择某个级别后，从该级别开始向上匹配，不再考虑匹配低级别
           
-          // 2. 如果三级区域匹配失败，尝试精确匹配二级区域（city）
-          if (!singleMatch) {
+          // 当startLevel >= 3时，从第三级开始匹配
+          if (!singleMatch && startLevel >= 3) {
+            // 1. 首先尝试精确匹配三级区域（district）
             singleMatch = await prisma.standardPostalCode.findFirst({
               where: {
-                city: originalRoute
+                district: originalRoute
+              }
+            });
+            if (singleMatch) {
+              matchLevel = 'district';
+            }
+            
+            // 1.1 如果三级区域精确匹配失败，尝试开头匹配三级区域
+            if (!singleMatch) {
+              const districtMatches = await prisma.standardPostalCode.findMany({
+                where: { district: { startsWith: originalRoute } }
+              });
+              if (districtMatches.length === 1) {
+                singleMatch = districtMatches[0];
+                matchLevel = 'district';
+              } else if (districtMatches.length > 1) {
+                singleMatch = districtMatches[0];
+                matchLevel = 'district';
+                cleanedRecord['_multipleMatch'] = true;
+              }
+            }
+          }
+          
+          // 当startLevel >= 2时，从第二级开始匹配（包括从第三级降级到第二级的情况）
+          if (!singleMatch && startLevel >= 2) {
+            // 2. 尝试精确匹配二级区域（city），仅匹配第三级为空的记录
+            singleMatch = await prisma.standardPostalCode.findFirst({
+              where: {
+                city: originalRoute,
+                district: ''
               }
             });
             if (singleMatch) {
               matchLevel = 'city';
             }
+            
+            // 2.1 如果二级区域精确匹配失败，尝试开头匹配二级区域，仅匹配第三级为空的记录
+            if (!singleMatch) {
+              const cityMatches = await prisma.standardPostalCode.findMany({
+                where: { city: { startsWith: originalRoute }, district: '' }
+              });
+              if (cityMatches.length === 1) {
+                singleMatch = cityMatches[0];
+                matchLevel = 'city';
+              } else if (cityMatches.length > 1) {
+                singleMatch = cityMatches[0];
+                matchLevel = 'city';
+                cleanedRecord['_multipleMatch'] = true;
+              }
+            }
           }
           
-          // 3. 如果二级区域匹配失败，尝试精确匹配一级区域（province）
-          if (!singleMatch) {
+          // 当startLevel >= 1时，从第一级开始匹配（包括从第二级降级到第一级的情况）
+          if (!singleMatch && startLevel >= 1) {
+            // 3. 尝试精确匹配一级区域（province），仅匹配第二级和第三级都为空的记录
             singleMatch = await prisma.standardPostalCode.findFirst({
               where: {
-                province: originalRoute
+                province: originalRoute,
+                city: '',
+                district: ''
               }
             });
             if (singleMatch) {
               matchLevel = 'province';
+            }
+            
+            // 3.1 如果一级区域精确匹配失败，尝试开头匹配一级区域，仅匹配第二级和第三级都为空的记录
+            if (!singleMatch) {
+              const provinceMatches = await prisma.standardPostalCode.findMany({
+                where: { province: { startsWith: originalRoute }, city: '', district: '' }
+              });
+              if (provinceMatches.length === 1) {
+                singleMatch = provinceMatches[0];
+                matchLevel = 'province';
+              } else if (provinceMatches.length > 1) {
+                singleMatch = provinceMatches[0];
+                matchLevel = 'province';
+                cleanedRecord['_multipleMatch'] = true;
+              }
             }
           }
           
@@ -657,30 +745,34 @@ export class PostalService {
       worksheet = XLSX.utils.aoa_to_sheet([['无数据']]);
     } else {
       // 排除不需要的列
-      const excludeColumns = ['省 (oTMS)', '市 (oTMS)', '区 (oTMS)', '市 (town)', '县 (County)', '_isSingleCityColumn'];
+      const excludeColumns = ['省 (oTMS)', '市 (oTMS)', '区 (oTMS)', '市 (town)', '县 (County)', '_isSingleCityColumn', '_multipleMatch'];
       const headers = Object.keys(resultData[0]).filter(header => !excludeColumns.includes(header));
+      
+      // 创建数据数组（不包含_multipleMatch列）
       const data = [headers, ...resultData.map(row => headers.map(header => row[header] || ''))];
       worksheet = XLSX.utils.aoa_to_sheet(data);
 
-      // 为oTMS字段添加黄色背景
-      const oTMSHeaders = headers.filter(header => header.includes('（oTMS）'));
-      oTMSHeaders.forEach(header => {
-        const colIndex = headers.indexOf(header);
-        if (colIndex !== -1) {
-          // 从第二行开始（第一行是表头）
-          for (let rowIndex = 1; rowIndex <= resultData.length; rowIndex++) {
-            const cellAddress = XLSX.utils.encode_cell({ c: colIndex, r: rowIndex });
-            if (worksheet[cellAddress]) {
-              // 添加黄色背景
-              worksheet[cellAddress].s = {
-                fill: {
-                  fgColor: {
-                    rgb: "FFFFFF00" // 黄色背景
-                  }
-                }
-              };
+      // 设置列宽
+      worksheet['!cols'] = Array(headers.length).fill({ wch: 15 });
+
+      // 为多匹配行设置黄色背景
+      resultData.forEach((row, index) => {
+        const isMultipleMatch = row['_multipleMatch'] === true || row['_multipleMatch'] === 'true';
+        if (isMultipleMatch) {
+          // 当前数据行在工作表中的行号（+1是因为有表头行）
+          const rowNum = index + 1;
+          // 为该行的所有单元格设置黄色背景
+          headers.forEach((_, colIndex) => {
+            const cellAddress = XLSX.utils.encode_cell({ r: rowNum, c: colIndex });
+            if (!worksheet[cellAddress]) {
+              worksheet[cellAddress] = { v: '' };
             }
-          }
+            worksheet[cellAddress].s = {
+              fill: {
+                fgColor: { rgb: 'FFFFFF00' }
+              }
+            };
+          });
         }
       });
     }
