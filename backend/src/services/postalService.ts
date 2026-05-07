@@ -317,83 +317,94 @@ export class PostalService {
           
           // 根据startLevel决定从哪个级别开始匹配
           // startLevel: 1-第一级(省), 2-第二级(市), 3-第三级(区县)
-          // 选择某个级别后，从该级别开始向上匹配，不再考虑匹配低级别
+          // 匹配规则：
+          // - 选择第一级：优先匹配省 → 失败则匹配市 → 失败则匹配区县
+          // - 选择第二级：优先匹配市 → 失败则匹配区县 → 失败则匹配省
+          // - 选择第三级：优先匹配区县 → 失败则匹配市 → 失败则匹配省
           
-          // 当startLevel >= 3时，从第三级开始匹配
-          if (!singleMatch && startLevel >= 3) {
-            // 1. 首先尝试精确匹配三级区域（district）
-            singleMatch = await prisma.standardPostalCode.findFirst({
-              where: { district: cityValue }
+          // 定义匹配函数
+          const tryMatchDistrict = async (value: string): Promise<any> => {
+            // 精确匹配三级区域
+            const exactMatch = await prisma.standardPostalCode.findFirst({
+              where: { district: value }
             });
-            if (singleMatch) {
-              matchLevel = 'district';
-            }
+            if (exactMatch) return { match: exactMatch, level: 'district' as const, multiple: false };
             
-            // 2. 如果三级区域精确匹配失败，尝试开头匹配三级区域
-            if (!singleMatch) {
-              const districtMatches = await prisma.standardPostalCode.findMany({
-                where: { district: { startsWith: cityValue } }
-              });
-              if (districtMatches.length === 1) {
-                singleMatch = districtMatches[0];
-                matchLevel = 'district';
-              } else if (districtMatches.length > 1) {
-                singleMatch = districtMatches[0];
-                matchLevel = 'district';
-                cleanedRecord['_multipleMatch'] = true;
-              }
+            // 开头匹配三级区域
+            const prefixMatches = await prisma.standardPostalCode.findMany({
+              where: { district: { startsWith: value } }
+            });
+            if (prefixMatches.length === 1) {
+              return { match: prefixMatches[0], level: 'district' as const, multiple: false };
+            } else if (prefixMatches.length > 1) {
+              return { match: prefixMatches[0], level: 'district' as const, multiple: true };
             }
+            return null;
+          };
+          
+          const tryMatchCity = async (value: string): Promise<any> => {
+            // 精确匹配二级区域（仅匹配第三级为空的记录）
+            const exactMatch = await prisma.standardPostalCode.findFirst({
+              where: { city: value, district: '' }
+            });
+            if (exactMatch) return { match: exactMatch, level: 'city' as const, multiple: false };
+            
+            // 开头匹配二级区域（仅匹配第三级为空的记录）
+            const prefixMatches = await prisma.standardPostalCode.findMany({
+              where: { city: { startsWith: value }, district: '' }
+            });
+            if (prefixMatches.length === 1) {
+              return { match: prefixMatches[0], level: 'city' as const, multiple: false };
+            } else if (prefixMatches.length > 1) {
+              return { match: prefixMatches[0], level: 'city' as const, multiple: true };
+            }
+            return null;
+          };
+          
+          const tryMatchProvince = async (value: string): Promise<any> => {
+            // 精确匹配一级区域（仅匹配第二级和第三级都为空的记录）
+            const exactMatch = await prisma.standardPostalCode.findFirst({
+              where: { province: value, city: '', district: '' }
+            });
+            if (exactMatch) return { match: exactMatch, level: 'province' as const, multiple: false };
+            
+            // 开头匹配一级区域（仅匹配第二级和第三级都为空的记录）
+            const prefixMatches = await prisma.standardPostalCode.findMany({
+              where: { province: { startsWith: value }, city: '', district: '' }
+            });
+            if (prefixMatches.length === 1) {
+              return { match: prefixMatches[0], level: 'province' as const, multiple: false };
+            } else if (prefixMatches.length > 1) {
+              return { match: prefixMatches[0], level: 'province' as const, multiple: true };
+            }
+            return null;
+          };
+          
+          let matchResult: any = null;
+          
+          // 根据选择的级别进行匹配
+          if (startLevel === 1) {
+            // 选择第一级：优先匹配省 → 失败则匹配市 → 失败则匹配区县
+            matchResult = await tryMatchProvince(cityValue);
+            if (!matchResult) matchResult = await tryMatchCity(cityValue);
+            if (!matchResult) matchResult = await tryMatchDistrict(cityValue);
+          } else if (startLevel === 2) {
+            // 选择第二级：优先匹配市 → 失败则匹配区县 → 失败则匹配省
+            matchResult = await tryMatchCity(cityValue);
+            if (!matchResult) matchResult = await tryMatchDistrict(cityValue);
+            if (!matchResult) matchResult = await tryMatchProvince(cityValue);
+          } else {
+            // 选择第三级：优先匹配区县 → 失败则匹配市 → 失败则匹配省
+            matchResult = await tryMatchDistrict(cityValue);
+            if (!matchResult) matchResult = await tryMatchCity(cityValue);
+            if (!matchResult) matchResult = await tryMatchProvince(cityValue);
           }
           
-          // 当startLevel >= 2时，从第二级开始匹配（包括从第三级降级到第二级的情况）
-          if (!singleMatch && startLevel >= 2) {
-            // 3. 尝试精确匹配二级区域（city），仅匹配第三级为空的记录
-            singleMatch = await prisma.standardPostalCode.findFirst({
-              where: { city: cityValue, district: '' }
-            });
-            if (singleMatch) {
-              matchLevel = 'city';
-            }
-            
-            // 4. 如果二级区域精确匹配失败，尝试开头匹配二级区域，仅匹配第三级为空的记录
-            if (!singleMatch) {
-              const cityMatches = await prisma.standardPostalCode.findMany({
-                where: { city: { startsWith: cityValue }, district: '' }
-              });
-              if (cityMatches.length === 1) {
-                singleMatch = cityMatches[0];
-                matchLevel = 'city';
-              } else if (cityMatches.length > 1) {
-                singleMatch = cityMatches[0];
-                matchLevel = 'city';
-                cleanedRecord['_multipleMatch'] = true;
-              }
-            }
-          }
-          
-          // 当startLevel >= 1时，从第一级开始匹配（包括从第二级降级到第一级的情况）
-          if (!singleMatch && startLevel >= 1) {
-            // 5. 尝试精确匹配一级区域（province），仅匹配第二级和第三级都为空的记录
-            singleMatch = await prisma.standardPostalCode.findFirst({
-              where: { province: cityValue, city: '', district: '' }
-            });
-            if (singleMatch) {
-              matchLevel = 'province';
-            }
-            
-            // 6. 如果一级区域精确匹配失败，尝试开头匹配一级区域，仅匹配第二级和第三级都为空的记录
-            if (!singleMatch) {
-              const provinceMatches = await prisma.standardPostalCode.findMany({
-                where: { province: { startsWith: cityValue }, city: '', district: '' }
-              });
-              if (provinceMatches.length === 1) {
-                singleMatch = provinceMatches[0];
-                matchLevel = 'province';
-              } else if (provinceMatches.length > 1) {
-                singleMatch = provinceMatches[0];
-                matchLevel = 'province';
-                cleanedRecord['_multipleMatch'] = true;
-              }
+          if (matchResult) {
+            singleMatch = matchResult.match;
+            matchLevel = matchResult.level;
+            if (matchResult.multiple) {
+              cleanedRecord['_multipleMatch'] = true;
             }
           }
           
@@ -441,92 +452,94 @@ export class PostalService {
           let matchLevel: 'district' | 'city' | 'province' | null = null;
           
           // 根据startLevel决定从哪个级别开始匹配
-          // 选择某个级别后，从该级别开始向上匹配，不再考虑匹配低级别
+          // 匹配规则：
+          // - 选择第一级：优先匹配省 → 失败则匹配市 → 失败则匹配区县
+          // - 选择第二级：优先匹配市 → 失败则匹配区县 → 失败则匹配省
+          // - 选择第三级：优先匹配区县 → 失败则匹配市 → 失败则匹配省
           
-          // 当startLevel >= 3时，从第三级开始匹配
-          if (!singleMatch && startLevel >= 3) {
-            // 1. 首先尝试精确匹配三级区域（district）
-            singleMatch = await prisma.standardPostalCode.findFirst({
-              where: {
-                district: originalRoute
-              }
+          // 定义匹配函数
+          const tryMatchDistrict2 = async (value: string): Promise<any> => {
+            // 精确匹配三级区域
+            const exactMatch = await prisma.standardPostalCode.findFirst({
+              where: { district: value }
             });
-            if (singleMatch) {
-              matchLevel = 'district';
-            }
+            if (exactMatch) return { match: exactMatch, level: 'district' as const, multiple: false };
             
-            // 1.1 如果三级区域精确匹配失败，尝试开头匹配三级区域
-            if (!singleMatch) {
-              const districtMatches = await prisma.standardPostalCode.findMany({
-                where: { district: { startsWith: originalRoute } }
-              });
-              if (districtMatches.length === 1) {
-                singleMatch = districtMatches[0];
-                matchLevel = 'district';
-              } else if (districtMatches.length > 1) {
-                singleMatch = districtMatches[0];
-                matchLevel = 'district';
-                cleanedRecord['_multipleMatch'] = true;
-              }
+            // 开头匹配三级区域
+            const prefixMatches = await prisma.standardPostalCode.findMany({
+              where: { district: { startsWith: value } }
+            });
+            if (prefixMatches.length === 1) {
+              return { match: prefixMatches[0], level: 'district' as const, multiple: false };
+            } else if (prefixMatches.length > 1) {
+              return { match: prefixMatches[0], level: 'district' as const, multiple: true };
             }
+            return null;
+          };
+          
+          const tryMatchCity2 = async (value: string): Promise<any> => {
+            // 精确匹配二级区域（仅匹配第三级为空的记录）
+            const exactMatch = await prisma.standardPostalCode.findFirst({
+              where: { city: value, district: '' }
+            });
+            if (exactMatch) return { match: exactMatch, level: 'city' as const, multiple: false };
+            
+            // 开头匹配二级区域（仅匹配第三级为空的记录）
+            const prefixMatches = await prisma.standardPostalCode.findMany({
+              where: { city: { startsWith: value }, district: '' }
+            });
+            if (prefixMatches.length === 1) {
+              return { match: prefixMatches[0], level: 'city' as const, multiple: false };
+            } else if (prefixMatches.length > 1) {
+              return { match: prefixMatches[0], level: 'city' as const, multiple: true };
+            }
+            return null;
+          };
+          
+          const tryMatchProvince2 = async (value: string): Promise<any> => {
+            // 精确匹配一级区域（仅匹配第二级和第三级都为空的记录）
+            const exactMatch = await prisma.standardPostalCode.findFirst({
+              where: { province: value, city: '', district: '' }
+            });
+            if (exactMatch) return { match: exactMatch, level: 'province' as const, multiple: false };
+            
+            // 开头匹配一级区域（仅匹配第二级和第三级都为空的记录）
+            const prefixMatches = await prisma.standardPostalCode.findMany({
+              where: { province: { startsWith: value }, city: '', district: '' }
+            });
+            if (prefixMatches.length === 1) {
+              return { match: prefixMatches[0], level: 'province' as const, multiple: false };
+            } else if (prefixMatches.length > 1) {
+              return { match: prefixMatches[0], level: 'province' as const, multiple: true };
+            }
+            return null;
+          };
+          
+          let matchResult2: any = null;
+          
+          // 根据选择的级别进行匹配
+          if (startLevel === 1) {
+            // 选择第一级：优先匹配省 → 失败则匹配市 → 失败则匹配区县
+            matchResult2 = await tryMatchProvince2(originalRoute);
+            if (!matchResult2) matchResult2 = await tryMatchCity2(originalRoute);
+            if (!matchResult2) matchResult2 = await tryMatchDistrict2(originalRoute);
+          } else if (startLevel === 2) {
+            // 选择第二级：优先匹配市 → 失败则匹配区县 → 失败则匹配省
+            matchResult2 = await tryMatchCity2(originalRoute);
+            if (!matchResult2) matchResult2 = await tryMatchDistrict2(originalRoute);
+            if (!matchResult2) matchResult2 = await tryMatchProvince2(originalRoute);
+          } else {
+            // 选择第三级：优先匹配区县 → 失败则匹配市 → 失败则匹配省
+            matchResult2 = await tryMatchDistrict2(originalRoute);
+            if (!matchResult2) matchResult2 = await tryMatchCity2(originalRoute);
+            if (!matchResult2) matchResult2 = await tryMatchProvince2(originalRoute);
           }
           
-          // 当startLevel >= 2时，从第二级开始匹配（包括从第三级降级到第二级的情况）
-          if (!singleMatch && startLevel >= 2) {
-            // 2. 尝试精确匹配二级区域（city），仅匹配第三级为空的记录
-            singleMatch = await prisma.standardPostalCode.findFirst({
-              where: {
-                city: originalRoute,
-                district: ''
-              }
-            });
-            if (singleMatch) {
-              matchLevel = 'city';
-            }
-            
-            // 2.1 如果二级区域精确匹配失败，尝试开头匹配二级区域，仅匹配第三级为空的记录
-            if (!singleMatch) {
-              const cityMatches = await prisma.standardPostalCode.findMany({
-                where: { city: { startsWith: originalRoute }, district: '' }
-              });
-              if (cityMatches.length === 1) {
-                singleMatch = cityMatches[0];
-                matchLevel = 'city';
-              } else if (cityMatches.length > 1) {
-                singleMatch = cityMatches[0];
-                matchLevel = 'city';
-                cleanedRecord['_multipleMatch'] = true;
-              }
-            }
-          }
-          
-          // 当startLevel >= 1时，从第一级开始匹配（包括从第二级降级到第一级的情况）
-          if (!singleMatch && startLevel >= 1) {
-            // 3. 尝试精确匹配一级区域（province），仅匹配第二级和第三级都为空的记录
-            singleMatch = await prisma.standardPostalCode.findFirst({
-              where: {
-                province: originalRoute,
-                city: '',
-                district: ''
-              }
-            });
-            if (singleMatch) {
-              matchLevel = 'province';
-            }
-            
-            // 3.1 如果一级区域精确匹配失败，尝试开头匹配一级区域，仅匹配第二级和第三级都为空的记录
-            if (!singleMatch) {
-              const provinceMatches = await prisma.standardPostalCode.findMany({
-                where: { province: { startsWith: originalRoute }, city: '', district: '' }
-              });
-              if (provinceMatches.length === 1) {
-                singleMatch = provinceMatches[0];
-                matchLevel = 'province';
-              } else if (provinceMatches.length > 1) {
-                singleMatch = provinceMatches[0];
-                matchLevel = 'province';
-                cleanedRecord['_multipleMatch'] = true;
-              }
+          if (matchResult2) {
+            singleMatch = matchResult2.match;
+            matchLevel = matchResult2.level;
+            if (matchResult2.multiple) {
+              cleanedRecord['_multipleMatch'] = true;
             }
           }
           
